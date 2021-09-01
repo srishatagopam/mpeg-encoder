@@ -504,7 +504,7 @@ def main():
             plt.subplot(1, 2, 2).set_title('Reconstructed I-frame'), plt.imshow(iframeRecon)
             plt.show()
 
-        # Do motion estimatation using the I-frame as the reference frame for the current frame in the loop.python main.py --file 'walk_qcif.avi' --extract 6 10
+        # Do motion estimatation using the I-frame as the reference frame for the current frame in the loop.python mpeg.py --file 'walk_qcif.avi' --extract 6 10
         coordMat, MV_arr, MV_subarr, yPred, cbPred, crPred = motionEstimation(yCurr, yIFrame, crIFrame, cbIFrame, width,
                                                                               height)
 
