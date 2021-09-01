@@ -1,3 +1,4 @@
+import argparse
 import cv2 as cv
 import numpy as np
 from itertools import product
@@ -99,14 +100,14 @@ def linearInterpolate(mat, width, height):
 
 def YCRCB2RGB(y, cr, cb, width, height, upTrue=True):
     '''
-    Converts an image from YCrCb to BGR format.
+    Converts an image from YCrCb to RGB format.
     :param y: Y component.
     :param cr: Cr component.
     :param cb: Cb component.
     :param width: width of image.
     :param height: height of image.
     :param upTrue: flag indicating whether the image needs to be upsampled from 4:2:0 format.
-    :return: reconstructed BGR image.
+    :return: reconstructed RGB image.
     '''
     # Upsample image if needed.
     if upTrue:
@@ -118,9 +119,9 @@ def YCRCB2RGB(y, cr, cb, width, height, upTrue=True):
     cb = cb.astype(np.uint8)
 
     reconstructed_ycrcb = cv.merge((y, cr, cb))
-    reconstructed_bgr = cv.cvtColor(reconstructed_ycrcb, cv.COLOR_YCrCb2RGB)
+    reconstructed_rgb = cv.cvtColor(reconstructed_ycrcb, cv.COLOR_YCrCb2RGB)
 
-    return reconstructed_bgr
+    return reconstructed_rgb
 
 
 # NOT CURRENTLY USED
@@ -337,16 +338,20 @@ def motionEstimation(y_curr, y_ref, cr_ref, cb_ref, width, height):
     coordMat = np.zeros((4, 99))
     mv_row = mv_col = 0
 
+    # Search window sizes depend on where the macroblock is in the frame; i.e. at an edge, column/row, or in the middle.
     SW_dict = {
         576: 81,
         768: 153,
         1024: 289
     }
 
+    # For each macroblock in the frame:
     mv_idx = 0
     for n, m in product(range(0, height - 16, 16), range(0, width - 16, 16)):
-        MB_curr = y_curr[n:n + 15, m:m + 15]
+        MB_curr = y_curr[n:n + 15, m:m + 15]  # Current macroblock.
 
+        # Identify search window parameters. For 8 px in each directions, we can have search windows of sizes 24x24,
+        # 24x32, 32x24, or 32x32.
         SW_hmin = 0 if n - 8 < 0 else n - 8
         SW_wmin = 0 if m - 8 < 0 else m - 8
         SW_hmax = height if n + 16 - 1 + 8 > height else n + 16 - 1 + 8
@@ -356,12 +361,12 @@ def motionEstimation(y_curr, y_ref, cr_ref, cb_ref, width, height):
         SW_y = SW_hmax - SW_hmin + 1
         SW_size = int(SW_x * SW_y)
 
+        # No. of candidate blocks == search window area.
         SAD_len = 0
         for x, y in SW_dict.items():
             if x == SW_size:
                 SAD_len = y
                 break
-
         SAD_vect = np.zeros(SAD_len)
         SAD_arr = np.zeros((2, SAD_len)).astype(int)
         for i in range(SAD_len):
@@ -369,6 +374,7 @@ def motionEstimation(y_curr, y_ref, cr_ref, cb_ref, width, height):
             SAD_arr[0, i] = -1
             SAD_arr[1, i] = -1
 
+        # Go through the designated search window for the current macroblock.
         SW_idx = 0
         for i, j in product(range(SW_hmin, SW_hmax - 16), range(SW_wmin, SW_wmax - 16)):
             MB_temp = y_ref[i:i + 15, j:j + 15]
@@ -379,6 +385,7 @@ def motionEstimation(y_curr, y_ref, cr_ref, cb_ref, width, height):
             SAD_arr[1, SW_idx] = j
             SW_idx += 1
 
+        # Get minimum SAD (sum of absolute differences) and search for its corresponding coordinates.
         SAD_min = min(SAD_vect)
         for i in range(SAD_len):
             if SAD_vect[i] == SAD_min:
@@ -386,14 +393,18 @@ def motionEstimation(y_curr, y_ref, cr_ref, cb_ref, width, height):
                 mv_col = (SAD_arr[1, i])
                 break
 
+        # The coordinates gives the the top left pixel + the motion vector coordinates dx and dy.
         MV_arr[0, mv_idx] = mv_row - n
         MV_arr[1, mv_idx] = mv_col - m
 
+        # Do the same for cb/cr, which are subsampled.
         MV_subarr[0, mv_idx] = int((mv_row - n) // 2)
         MV_subarr[1, mv_idx] = int((mv_col - m) // 2)
 
+        # Apply the motion vectors to the current block of the reference frame,
         y_pred[n:n + 15, m:m + 15] = np.float32(y_ref[mv_row:mv_row + 15, mv_col:mv_col + 15])
 
+        # Get motion vector inputs for quiver().
         coordMat[0, mv_idx] = m
         coordMat[1, mv_idx] = n
         coordMat[2, mv_idx] = mv_col - m
@@ -401,6 +412,7 @@ def motionEstimation(y_curr, y_ref, cr_ref, cb_ref, width, height):
 
         mv_idx += 1
 
+    # Do the same for cb/cr.
     cbcr_idx = 0
     for i, j in product(range(0, (height // 2) - 8, 8), range(0, (width // 2) - 8, 8)):
         ref_row = i + (MV_subarr[0, cbcr_idx])
@@ -415,10 +427,21 @@ def motionEstimation(y_curr, y_ref, cr_ref, cb_ref, width, height):
 
 
 def main():
-    filepath = 'walk_qcif.avi'
-    frames, width, height = extractFrames(filepath, 6, 10)
+    desc = 'Showcase of image processing techniques in MPEG encoder/decoder framework.'
+    parser = argparse.ArgumentParser(description=desc)
 
-    for frame_num in range(1, 5):
+    parser.add_argument('--file', dest='filepath', required=True)
+    parser.add_argument('--extract', nargs='+', type=int)
+    args = parser.parse_args()
+
+    # Get arguments
+    filepath = args.filepath
+    (f1, f2) = tuple(args.extract)
+
+    frames, width, height = extractFrames(filepath, f1, f2)
+    num = f2 - f1 + 1
+
+    for frame_num in range(1, num):
         ref = frames[frame_num - 1]
         curr = frames[frame_num]
 
@@ -434,7 +457,9 @@ def main():
         cbRef, crRef = subsample_420(cbRef, crRef, width, height)
         cbCurr, crCurr = subsample_420(cbCurr, crCurr, width, height)
 
-        # ENCODER
+        ###########
+        # ENCODER #
+        ###########
         if frame_num == 1:
             iframeOrig = YCRCB2RGB(yRef, crRef, cbRef, width, height)
 
@@ -474,10 +499,12 @@ def main():
                                     width, height)
 
             # Display the original I-frame and its reconstruction at the decoder.
-            plt.subplot(1, 2, 1), plt.imshow(iframeOrig)
-            plt.subplot(1, 2, 2), plt.imshow(iframeRecon)
+            plt.figure(figsize=(10, 10))
+            plt.subplot(1, 2, 1).set_title('Original I-frame'), plt.imshow(iframeOrig)
+            plt.subplot(1, 2, 2).set_title('Reconstructed I-frame'), plt.imshow(iframeRecon)
             plt.show()
 
+        # Do motion estimatation using the I-frame as the reference frame for the current frame in the loop.python main.py --file 'walk_qcif.avi' --extract 6 10
         coordMat, MV_arr, MV_subarr, yPred, cbPred, crPred = motionEstimation(yCurr, yIFrame, crIFrame, cbIFrame, width,
                                                                               height)
 
@@ -485,6 +512,7 @@ def main():
         cbTmp = cbPred
         crTmp = crPred
 
+        # Get residual frame
         yDiff = yCurr.astype(np.uint16) - yTmp.astype(np.uint16)
         cbDiff = cbCurr.astype(np.uint16) - cbTmp.astype(np.uint16)
         crDiff = crCurr.astype(np.uint16) - crTmp.astype(np.uint16)
@@ -499,12 +527,15 @@ def main():
         cbQuant = quantize(cbDCT, width // 2, height // 2, isLum=False)
         crQuant = quantize(crDCT, width // 2, height // 2, isLum=False)
 
-        # Extract DC and AC coefficients; these would be transmitted to the decoder in a real MPEG
-        # encoder/decoder framework.
+        # Extract DC and AC coefficients; these would be transmitted to the decoder in a real MPEG encoder/decoder
+        # framework.
         yCoeffMat = extractCoefficients(yQuant, width, height)
         yCoeffMat = extractCoefficients(cbQuant, width // 2, height // 2)
         yCoeffMat = extractCoefficients(crQuant, width // 2, height // 2)
 
+        ###########
+        # DECODER #
+        ###########
         # Perform inverse quantization.
         yIQuant = quantize(yQuant, width, height, isInv=True)
         cbIQuant = quantize(cbQuant, width // 2, height // 2, isInv=True, isLum=False)
@@ -520,8 +551,10 @@ def main():
         cbRcn = cbIDCT.astype(np.uint8) + cbPred.astype(np.uint8)
         crRcn = crIDCT.astype(np.uint8) + crPred.astype(np.uint8)
 
+        # Merge frames and convert to RGB.
         rgb_recon = YCRCB2RGB(yRcn, crRcn, cbRcn, width, height)
 
+        # Prepare residual frame so it can be shown with imshow().
         diffMin = np.amin(yDiff)
         diffMat = yDiff - diffMin
         for i, j in product(range(height), range(width)):
@@ -529,10 +562,14 @@ def main():
                 diffMat[i, j] = 255
         diffMat = diffMat.astype(np.uint8)
 
-        plt.subplot(2, 2, 1), plt.imshow(img_rgb)
-        plt.subplot(2, 2, 2), plt.imshow(rgb_recon)
-        plt.subplot(2, 2, 3), plt.imshow(diffMat)
-        plt.subplot(2, 2, 4), plt.quiver(coordMat[0, :], coordMat[1, :], coordMat[2, :], coordMat[3, :])
+        # For each P-frame in the GOP, display original, reconstructed, & residual images and the quiver plot of the
+        # motion vectors used frame-to-frame.
+        plt.figure(figsize=(10, 10))
+        plt.subplot(2, 2, 1).set_title('Original Image'), plt.imshow(img_rgb)
+        plt.subplot(2, 2, 2).set_title('Reconstructed Image'), plt.imshow(rgb_recon)
+        plt.subplot(2, 2, 3).set_title('Residual Image'), plt.imshow(diffMat)
+        plt.subplot(2, 2, 4).set_title('Motion Vectors'), plt.quiver(coordMat[0, :], coordMat[1, :], coordMat[2, :],
+                                                                     coordMat[3, :])
         plt.show()
 
 
